@@ -4,6 +4,8 @@ extern crate alloc;
 
 pub use grapple_frc_msgs;
 
+use core::sync::atomic::Ordering;
+
 use alloc::{string::String, borrow::{ToOwned, Cow}, boxed::Box};
 use grapple_config::{ConfigurationMarshal, ConfigurationProvider, GenericConfigurationProvider};
 use grapple_frc_msgs::{grapple::{lasercan::{LaserCanRoi, LaserCanRangingMode, LaserCanMeasurement, LaserCanRoiU4, LaserCanTimingBudget, self}, errors::{GrappleResult, GrappleError}, TaggedGrappleMessage, fragments::{FragmentReassemblerRx, FragmentReassemblerTx, FragmentReassembler}, GrappleDeviceMessage, firmware::GrappleFirmwareMessage, GrappleBroadcastMessage, device_info::{GrappleDeviceInfo, GrappleModelId}, Request, MANUFACTURER_GRAPPLE, DEVICE_TYPE_DISTANCE_SENSOR}, MessageId, ManufacturerMessage, binmarshal::{Marshal, Demarshal, BitView}, DEVICE_ID_BROADCAST, DEVICE_TYPE_FIRMWARE_UPGRADE, DEVICE_TYPE_BROADCAST};
@@ -108,6 +110,9 @@ pub struct LaserCANImpl<WDG, SYST, DTB, CAN, IO> {
   pub sensor: Box<dyn Sensor + Send + Sync>,
   pub config: Box<dyn GenericConfigurationProvider<LaserCanConfiguration> + Send>,
   pub io: IO,
+  pub total_ms: &'static AtomicU32,
+  pub auto_ms: &'static AtomicU32,
+  pub tele_ms: &'static AtomicU32,
 
   reassemble: (FragmentReassemblerRx, FragmentReassemblerTx),
   led_counter: u32,
@@ -128,7 +133,10 @@ impl<
     can: CAN,
     sensor: Box<dyn Sensor + Send + Sync>,
     marshal: MRSHL,
-    io: IO
+    io: IO,
+    total_ms: &'static AtomicU32,
+    auto_ms: &'static AtomicU32,
+    tele_ms: &'static AtomicU32,
   ) -> GrappleResult<'static, Self> {
     let provider = Box::new(ConfigurationProvider::new(marshal)
       .map_err(|_| GrappleError::Generic(Cow::Borrowed("Configuration Provider Initialisation Failed").into()))?);
@@ -139,6 +147,7 @@ impl<
 
       watchdog, systick, to_bootloader, can,
       sensor, config: provider, io,
+      total_ms, auto_ms, tele_ms,
 
       reassemble: FragmentReassembler::new(1000, CAN::MAX_MSG_SIZE).split(),
       led_counter: 0, blink_counter: 40,
@@ -283,6 +292,27 @@ impl<
                   self.config.current_mut().device_id = new_id;
                   self.config.commit();
                 },
+                // seperate each time by commas which can be split java-side (library)
+                GrappleDeviceInfo::GetRuntimes { serial } if serial == self.serial_number => {
+                  let total = self.total_ms.load(Ordering::Relaxed);
+                  let auto = self.auto_ms.load(Ordering::Relaxed);
+                  let tele = self.tele_ms.load(Ordering::Relaxed);
+
+                  let msg = TaggedGrappleMessage::new(
+                      self.config.current().device_id,
+                      GrappleDeviceMessage::Broadcast(
+                          GrappleBroadcastMessage::DeviceInfo(GrappleDeviceInfo::EnumerateResponse {
+                              model_id: GrappleModelId::LaserCan,
+                              serial: self.serial_number,
+                              is_dfu: false,
+                              is_dfu_in_progress: false,
+                              version: alloc::format!("{},{},{}", total, auto, tele).into(),
+                              name: self.config.current().name.clone().into(),
+                          })
+                      )
+                  );
+                  self.enqueue_can_msg(msg).ok();
+                }
                 GrappleDeviceInfo::CommitConfig { serial } if serial == self.serial_number => {
                   self.config.commit();
                 },

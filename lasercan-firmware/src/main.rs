@@ -3,7 +3,7 @@
 
 extern crate alloc;
 
-use core::{mem::MaybeUninit, sync::atomic::AtomicU32};
+use core::{mem::MaybeUninit, sync::atomic::AtomicU32, sync::atomic::AtomicBool, core::sync::atomic::Ordering};
 
 use alloc::{format, collections::VecDeque};
 use bxcan::{filter::Mask32, ExtendedId};
@@ -35,6 +35,14 @@ fn heap_init() {
 }
 
 static TIME_MS: AtomicU32 = AtomicU32::new(0);
+
+// tracking auto enabled, teleop enabled, and total time (non enabled)
+static TOTAL_MS: AtomicU32 = AtomicU32::new(0);
+static AUTO_MS: AtomicU32 = AtomicU32::new(0);
+static TELE_MS: AtomicU32 = AtomicU32::new(0);
+
+static ENABLED: AtomicBool = AtomicBool::new(false);
+static AUTO: AtomicBool = AtomicBool::new(false);
 
 macro_rules! convert_sensor_err {
   ($ex:expr) => {
@@ -348,7 +356,10 @@ mod app {
       CanBusImpl::new(can_bus),
       sensor,
       config_marshal,
-      InputOutputImpl { led: status_led.erase() }
+      InputOutputImpl { led: status_led.erase() },
+      &TOTAL_MS,
+      &AUTO_MS,
+      &TELE_MS,
     ).unwrap();
 
     (
@@ -365,7 +376,19 @@ mod app {
 
   #[task(binds = SysTick, priority=15, local=[])]
   fn systick_tick(_: systick_tick::Context) {
-    crate::TIME_MS.fetch_add(100, core::sync::atomic::Ordering::Relaxed);
+    crate::TIME_MS.fetch_add(100, Ordering::Relaxed);
+
+    // always tick total time
+    TOTAL_MS.fetch_add(100, Ordering::Relaxed);
+
+    // only tick auto/teleop if enabled
+    if ENABLED.load(Ordering::Relaxed) {
+      if AUTO.load(Ordering::Relaxed) {
+        AUTO_MS.fetch_add(100, Ordering::Relaxed);
+      } else {
+        TELE_MS.fetch_add(100, Ordering::Relaxed);
+      }
+    } 
   }
 
   #[task(binds = TIM1_UP, priority = 1, shared = [lasercan_impl], local = [led_timer])]
@@ -420,6 +443,13 @@ mod app {
               unsafe { asm!("nop") }
               
               let id = grapple_lasercan::grapple_frc_msgs::MessageId::from(ext.as_raw());
+
+              // check can id for frc global heartbeat
+              if id == 0x01011840 && !data.is_empty() {
+                ENABLED.store((data[0] & 0x01) != 0, Ordering::Relaxed);
+                AUTO.store((data[0] & 0x02) != 0, Ordering::Relaxed);
+              }
+
               let buf = data.map(|x| x.as_ref()).unwrap_or(&[]);
 
               i.on_can_message(id, buf);
