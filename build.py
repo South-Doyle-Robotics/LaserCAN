@@ -26,13 +26,11 @@ def build():
   version = get_cargo_version("lasercan-firmware")
 
   run(
-    "grapple-bundle", "build",
-    "-b", "lasercan-bootloader/target/thumbv7m-none-eabi/release/lasercan-bootloader",
-    "-f", "lasercan-firmware/target/thumbv7m-none-eabi/release/lasercan-firmware",
-    "-c", "bundle-config.json",
-    "--lasercan-rev1-bootloader-check",
-    f"target/LaserCAN-{version}.grplbndl",
-    capture = False
+    "D:/ChroKno/bundle/target/release/grapple-bundle.exe", "build",
+    "--firmware", "lasercan-firmware/target/thumbv7m-none-eabi/release/lasercan-firmware",
+    "-bootloader", "lasercan-bootloader/target/thumbv7m-none-eabi/release/lasercan-bootloader",
+    "--config", "bundle-config.json",
+    "target/LaserCAN-1.0.grplbndl"
   )
 
 def flash():

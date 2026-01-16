@@ -3,7 +3,8 @@
 
 extern crate alloc;
 
-use core::{mem::MaybeUninit, sync::atomic::AtomicU32, sync::atomic::AtomicBool, core::sync::atomic::Ordering};
+use crate::lasercan::TimeMeter;
+use core::{mem::MaybeUninit, sync::atomic::{AtomicBool, AtomicU32, Ordering}};
 
 use alloc::{format, collections::VecDeque};
 use bxcan::{filter::Mask32, ExtendedId};
@@ -92,6 +93,18 @@ impl <E: core::fmt::Debug, T: vl53l1x_uld::comm::Write<Error = E> + vl53l1x_uld:
       budget: self.budget.clone(),
       roi: self.roi.clone(),
     })
+  }
+
+  fn get_total_ms(&mut self) -> GrappleResult<'static, TimeMeter> {
+    Ok(grapple_lasercan::grapple_frc_msgs::grapple::lasercan::TimeMeter { time: TOTAL_MS.load(Ordering::Relaxed) })
+  }
+
+  fn get_auto_ms(&mut self) -> GrappleResult<'static, TimeMeter> {
+    Ok(grapple_lasercan::grapple_frc_msgs::grapple::lasercan::TimeMeter { time: AUTO_MS.load(Ordering::Relaxed) })
+  }
+
+  fn get_tele_ms(&mut self) -> GrappleResult<'static, TimeMeter> {
+    Ok(grapple_lasercan::grapple_frc_msgs::grapple::lasercan::TimeMeter { time: TELE_MS.load(Ordering::Relaxed) })
   }
 
   fn stop_ranging(&mut self) -> GrappleResult<'static, ()> {
@@ -206,7 +219,7 @@ impl CanBus for CanBusImpl {
 
 #[rtic::app(device = stm32f1xx_hal::pac, peripherals = true)]
 mod app {
-  use core::{marker::PhantomData, arch::asm};
+  use core::{arch::asm, marker::PhantomData, sync::atomic::Ordering};
 
   use bxcan::Interrupts;
   use grapple_lasercan::LaserCANImpl;
@@ -215,7 +228,7 @@ mod app {
   use lasercan_common::bootutil::feed_watchdog;
   use stm32f1xx_hal::{prelude::*, flash::FlashExt, pac::{TIM1, TIM2, I2C1, Interrupt}, timer::{self, CounterMs, CounterHz}, gpio::{Alternate, OpenDrain}, can::Can, i2c::{Mode, BlockingI2c}};
 
-  use crate::{heap_init, META_VERSION, WatchdogImpl, SysTickImpl, DropToBootloaderImpl, CanBusImpl, InputOutputImpl};
+  use crate::{AUTO, AUTO_MS, CanBusImpl, DropToBootloaderImpl, ENABLED, InputOutputImpl, META_VERSION, SysTickImpl, TELE_MS, TOTAL_MS, WatchdogImpl, heap_init};
 
   pub type Impl = LaserCANImpl<crate::WatchdogImpl, crate::SysTickImpl, crate::DropToBootloaderImpl, crate::CanBusImpl, crate::InputOutputImpl>;
 
@@ -445,9 +458,9 @@ mod app {
               let id = grapple_lasercan::grapple_frc_msgs::MessageId::from(ext.as_raw());
 
               // check can id for frc global heartbeat
-              if id == 0x01011840 && !data.is_empty() {
-                ENABLED.store((data[0] & 0x01) != 0, Ordering::Relaxed);
-                AUTO.store((data[0] & 0x02) != 0, Ordering::Relaxed);
+              if id == 0x01011840.into() && data.is_some() {
+                ENABLED.store((data.unwrap()[0] & 0x01) != 0, Ordering::Relaxed);
+                AUTO.store((data.unwrap()[0] & 0x02) != 0, Ordering::Relaxed);
               }
 
               let buf = data.map(|x| x.as_ref()).unwrap_or(&[]);
